@@ -5,11 +5,16 @@ on:
     branches:
       - main
   schedule:
-        # Runs everyday at 1:00 AM
-        - cron: "0 1 * * *"
+    # Runs everyday at 1:00 AM UTC (adjust time/timezone if needed)
+    - cron: "0 1 * * *"
+
+# Prevent concurrent runs for the same branch, cancel older runs
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: write # Required for git-auto-commit-action to push changes
 
 jobs:
   build:
@@ -19,39 +24,51 @@ jobs:
       - name: Check out the code
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Set up Node.js (LTS)
         uses: actions/setup-node@v4
         with:
-          node-version: "latest"
+          # Use a Long-Term Support (LTS) version for better stability
+          node-version: 'lts/*'
+          # Optional: Cache npm directory for potential speedup if using npx frequently
+          cache: 'npm'
 
-      - name: Install dependencies
+      # No explicit install step needed - we'll use npx
+
+      - name: Download latest BPB worker script
         run: |
-          npm install -g javascript-obfuscator
+          # Use curl: -f fails on server error, -sS is silent but shows errors, -L follows redirects, -o specifies output file
+          curl -fsSL -o origin.js https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js
+          # Basic check to ensure the download was successful and file is not empty
+          if [ ! -s origin.js ]; then
+            echo "Error: Failed to download origin.js or the file is empty."
+            exit 1
+          fi
 
-      - name: Clone BPB workjs
+      - name: Obfuscate BPB worker script using npx
         run: |
-          wget -O origin.js https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/refs/heads/main/build/unobfuscated-worker.js
+          # Execute javascript-obfuscator directly using npx
+          npx javascript-obfuscator origin.js --output _worker.js \
+            --compact true \
+            --control-flow-flattening true \
+            --control-flow-flattening-threshold 1 \
+            --dead-code-injection true \
+            --dead-code-injection-threshold 1 \
+            --identifier-names-generator hexadecimal \
+            --rename-globals true \
+            --string-array true \
+            --string-array-encoding 'rc4' \
+            --string-array-threshold 1 \
+            --transform-object-keys true \
+            --unicode-escape-sequence true
 
-      - name: Obfuscate BPB worker js
-        run: |
-          javascript-obfuscator origin.js --output _worker.js \
-          --compact true \
-          --control-flow-flattening true \
-          --control-flow-flattening-threshold 1 \
-          --dead-code-injection true \
-          --dead-code-injection-threshold 1 \
-          --identifier-names-generator hexadecimal \
-          --rename-globals true \
-          --string-array true \
-          --string-array-encoding 'rc4' \
-          --string-array-threshold 1 \
-          --transform-object-keys true \
-          --unicode-escape-sequence true
-
-      - name: Commit changes
+      - name: Commit obfuscated worker
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          branch: main
-          commit_message: ':arrow_up: update latest bpb panel'
-          commit_author: 'github-actions[bot] <github-actions[bot]@users.noreply.github.com>'
-          push_options: '--set-upstream'
+          # Explicitly specify the file to commit
+          file_pattern: '_worker.js'
+          # The branch is determined by the checkout context (main), explicitly setting it is usually redundant
+          # branch: main
+          commit_message: ':arrow_up: Update latest obfuscated BPB worker' # Slightly more descriptive message
+          # Use standard GitHub Actions bot email
+          commit_author: 'github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>'
+          # push_options: '--set-upstream' # Not typically needed for existing branches
